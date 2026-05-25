@@ -1,0 +1,92 @@
+{
+  "agents_dir": ".opencode/agents",
+  "commands_dir": ".opencode/commands",
+  "orchestrator_script": "lib/orchestrator.py",
+  "progress_schema_version": "2.0",
+  "permissions": {
+    "global_deny": [
+      "bash:linear *",
+      "bash:curl https://api.linear.app*",
+      "bash:rm -rf /*",
+      "bash:sudo rm *",
+      "bash:git push --force *",
+      "bash:git push --force-with-lease *",
+      "bash:git reset --hard *",
+      "bash:git filter-branch *"
+    ]
+  },
+  "models": {
+    "default": "claude-sonnet-4-6",
+    "spec": "claude-sonnet-4-6",
+    "planner": "claude-sonnet-4-6",
+    "test": "claude-sonnet-4-6",
+    "make": "claude-sonnet-4-6",
+    "check": "claude-haiku-4-5-20251001",
+    "simplify": "claude-haiku-4-5-20251001",
+    "guard": "claude-haiku-4-5-20251001",
+    "commit": "claude-haiku-4-5-20251001",
+    "progress": "claude-haiku-4-5-20251001"
+  },
+  "pipeline": {
+    "runner": null,
+    "worktree_isolation": true,
+    "auto_merge": true,
+    "cleanup_worktrees": true,
+    "max_budget_usd": 0,
+    "agent_max_retries": 3,
+    "agent_retry_base_delay_sec": 5,
+    "project_context_enabled": true,
+    "project_context_max_entries": 10,
+    "product_review_enabled": false,
+    "max_product_review_cycles": 2,
+    "sprint_size": 5,
+    "sprint_mode": "story_count",
+    "max_sprint_cycles": 10,
+    "auto_tag": false,
+    "auto_push_tags": false,
+    "watcher_enabled": true,
+    "watcher_stall_threshold_sec": 1800,
+    "watcher_max_blocked": 3,
+    "watcher_max_retries": 3,
+    "watcher_cadence_stories": 2,
+    "rfc_auto_apply": true,
+    "rfc_handling": "next_sprint_boundary",
+    "max_review_cycles": 2,
+    "max_test_retries": 1,
+    "max_make_retries": 2,
+    "max_delegations_per_phase": 2,
+    "agent_timeout_sec": 600,
+    "outer_timeout_sec": 480,
+    "auto_commit": true,
+    "commit_per_story": true,
+    "branch_pattern": "feat/{epic-id}/{story-id}-{slug}",
+    "verify_make_independently": true,
+    "convergence_requires_prior_pass": true,
+    "cascade_failures_to_dependents": true,
+    "require_commit_hash_for_dep_satisfaction": true,
+    "require_criterion_to_test_mapping": true
+  },
+  "agent_timeouts": {
+    "make": 900,
+    "test": 900,
+    "check": 600,
+    "simplify": 600,
+    "guard": 300,
+    "commit": 300
+  },
+  "production_gates": {
+    "enabled": true,
+    "gates": ["clean_working_tree"]
+  },
+  "agents": [
+    "spec",
+    "planner",
+    "progress",
+    "check",
+    "simplify",
+    "test",
+    "make",
+    "guard",
+    "commit"
+  ]
+}

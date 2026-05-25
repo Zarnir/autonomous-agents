@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Orchestrator state
+.opencode/progress.json
+.opencode/progress.backup.json
+.opencode/progress.json.tmp
+
+# OS
+.DS_Store

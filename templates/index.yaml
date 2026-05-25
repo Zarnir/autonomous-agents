@@ -1,0 +1,18 @@
+# Project metadata + epic ordering for the autonomous-agents pipeline.
+# Edit this file to declare your project name, description, and the order
+# in which epics should be planned (overrides alphanumeric filename order).
+#
+# See docs/specs/AUTHORING_GUIDE.md for the canonical spec format.
+
+project: my-project
+description: One-line project summary goes here.
+methodology: structured
+
+# Optional: explicit epic execution order. Filenames as they appear in
+# docs/specs/epics/. If omitted, files are sorted alphanumerically (so
+# the NN- numeric prefix on filenames sets default order).
+#
+# epic_order:
+#   - 01-foundation.md
+#   - 02-core-features.md
+#   - 03-polish.md
