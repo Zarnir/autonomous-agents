@@ -81,6 +81,24 @@ def test_main_dispatches_to_agent(import_orch, monkeypatch):
     assert called["prompt"] == "test prompt"
 
 
+def test_main_dispatches_to_serve(import_orch, monkeypatch):
+    """M21: `aa-orchestrator serve --port 0 --cmd status` dispatches to cmd_serve."""
+    called = {}
+    def fake(args):
+        called["port"] = args.port
+        called["host"] = args.host
+        called["inner"] = args.cmd_to_run
+        return 0
+    monkeypatch.setattr(import_orch, "cmd_serve", fake)
+    monkeypatch.setattr(sys, "argv", [
+        "orchestrator", "serve", "--port", "0", "--cmd", "status"
+    ])
+    assert import_orch.main() == 0
+    assert called["port"] == 0
+    assert called["host"] == "127.0.0.1"
+    assert called["inner"] == "status"
+
+
 def test_main_handles_keyboard_interrupt(import_orch, monkeypatch):
     def boom(args):
         raise KeyboardInterrupt()

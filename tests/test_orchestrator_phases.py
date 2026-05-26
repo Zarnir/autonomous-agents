@@ -65,6 +65,43 @@ def test_parse_verdict_convergence_suffix(import_orch):
     assert "PASS" in v and "[CONVERGENCE]" in v
 
 
+# M22 — verdict parsing robustness against markdown-formatted output
+# (real-world regression seen with MiniMax-M2.7 via OpenCode)
+
+def test_parse_verdict_strips_markdown_bold(import_orch):
+    """`**VERDICT:**` (markdown bold) must yield a clean verdict, not `**NEEDS_CHANGES`."""
+    v = import_orch.parse_verdict("**VERDICT:** NEEDS_CHANGES")
+    assert v == "NEEDS_CHANGES"
+
+
+def test_parse_verdict_strips_markdown_italic(import_orch):
+    """`_VERDICT:_` (markdown italic) yields clean verdict."""
+    v = import_orch.parse_verdict("_VERDICT:_ PASS")
+    assert v == "PASS"
+
+
+def test_parse_verdict_does_not_double_convergence(import_orch):
+    """If the verdict tail already contains `[CONVERGENCE]`, we must not append a duplicate."""
+    v = import_orch.parse_verdict("VERDICT: NEEDS_CHANGES [CONVERGENCE]")
+    assert v.count("[CONVERGENCE]") == 1
+    assert "NEEDS_CHANGES" in v
+
+
+def test_parse_verdict_handles_minimax_style_output(import_orch):
+    """Real-world regression: MiniMax-M2.7 emits `**Verdict:** X [CONVERGENCE]` —
+    historically produced `** NEEDS_CHANGES [CONVERGENCE] [CONVERGENCE]`."""
+    raw = (
+        "## @check Review\n\n"
+        "### STORY-x\n\n"
+        "**BLOCK**\n- nothing major\n\n"
+        "**Verdict:** NEEDS_CHANGES [CONVERGENCE]\n"
+    )
+    v = import_orch.parse_verdict(raw)
+    assert "NEEDS_CHANGES" in v
+    assert "**" not in v
+    assert v.count("[CONVERGENCE]") == 1
+
+
 def test_is_pass_block_overrides(import_orch):
     assert not import_orch.is_pass("PASS but BLOCK something")
 

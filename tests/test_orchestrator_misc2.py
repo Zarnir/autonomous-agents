@@ -42,7 +42,7 @@ def test_call_agent_raises_when_budget_exceeded(import_orch, project_root, monke
         def run(self, agent_name, prompt, **kw):
             return "agent output"
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     monkeypatch.setattr(orch, "_COST_TRACKING_AVAILABLE", True)
     monkeypatch.setattr(orch, "_cost_parse", lambda out, name: {"input_tokens": 100, "output_tokens": 50})
     monkeypatch.setattr(orch, "_cost_compute", lambda usage, model: 99.99)
@@ -68,7 +68,7 @@ def test_call_agent_swallows_cost_tracking_exceptions(import_orch, project_root,
         def run(self, agent_name, prompt, **kw):
             return "agent output"
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     monkeypatch.setattr(orch, "_COST_TRACKING_AVAILABLE", True)
 
     def broken_parse(out, name):

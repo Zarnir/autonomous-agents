@@ -39,7 +39,7 @@ def test_call_agent_invokes_runner_and_returns_output(import_orch, project_root,
         def run(self, agent_name, prompt, *, timeout, cwd=None, model=None, skill=None):
             return f"agent={agent_name} prompt_tail={prompt[-30:]}"
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     out = orch.call_agent("engineer", "do thing")
     assert "agent=engineer" in out
 
@@ -53,7 +53,7 @@ def test_call_agent_translates_hard_runner_error(import_orch, project_root, monk
             from runners import AgentRunnerError
             raise AgentRunnerError("engineer", "authentication failed")
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     with pytest.raises(orch.AgentError) as exc_info:
         orch.call_agent("engineer", "prompt")
     assert "authentication" in str(exc_info.value)
@@ -72,7 +72,7 @@ def test_call_agent_retries_on_transient_then_succeeds(import_orch, project_root
                 raise AgentRunnerError("engineer", "rate limit 429")
             return "success after retry"
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     import retry as retry_mod
     monkeypatch.setattr(retry_mod, "_compute_backoff", lambda attempt, policy: 0.0)
 
@@ -91,7 +91,7 @@ def test_call_agent_prepends_project_context_when_available(import_orch, project
             captured["prompt"] = prompt
             return "ok"
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     monkeypatch.setattr(orch, "load_project_context", lambda: "Prior story context here")
 
     orch.call_agent("engineer", "main task")
@@ -110,7 +110,7 @@ def test_call_agent_prepends_adr_context_when_available(import_orch, project_roo
             captured["prompt"] = prompt
             return "ok"
 
-    monkeypatch.setattr(orch, "_get_runner", lambda: FakeRunner())
+    monkeypatch.setattr(orch, "_get_runner_for_agent", lambda name: FakeRunner())
     monkeypatch.setattr(orch, "load_recent_adrs", lambda: "ADR-1: use Postgres")
 
     orch.call_agent("engineer", "main task")

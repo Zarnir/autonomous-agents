@@ -75,6 +75,33 @@ def test_install_sh_stages_all_five_opencode_slash_commands(tmp_path):
         assert (templates / name).exists(), f"missing template: {name}"
 
 
+def test_opencode_slash_commands_use_arguments_placeholder():
+    """M23: every slash command must use OpenCode's `$ARGUMENTS` placeholder
+    rather than the prose `[args...]` form.
+
+    Background: `$ARGUMENTS` is substituted by OpenCode (and Claude Code) at
+    the platform layer, BEFORE the LLM sees the prompt — deterministic and
+    model-agnostic. `[args...]` is just markdown prose that relies on the
+    LLM to interpret and substitute, which is unreliable on non-Claude
+    models (MiniMax-M2.7 was observed running commands with the literal
+    string `[args...]` or no args at all, breaking `/develop --dry-run`,
+    `/resume --retry-blocked`, etc.).
+
+    This test locks the contract so a future template edit can't regress.
+    """
+    commands_dir = REPO_ROOT / ".opencode" / "commands"
+    offenders: list[str] = []
+    for cmd_file in sorted(commands_dir.glob("*.md")):
+        body = cmd_file.read_text(encoding="utf-8")
+        if "[args...]" in body:
+            offenders.append(cmd_file.name)
+    assert not offenders, (
+        f"slash command(s) still use prose `[args...]` placeholder: {offenders}. "
+        "Replace with `$ARGUMENTS` so OpenCode/Claude Code substitute it at "
+        "the platform layer (works for any model)."
+    )
+
+
 def test_install_sh_update_re_copies_init_sh(tmp_path):
     """install.sh --update must re-copy init.sh from source (catches stale-install bug)."""
     aa_home = _aa_home_with_real_templates(tmp_path)

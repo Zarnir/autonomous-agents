@@ -17,7 +17,7 @@ archived for comparison.
 ## How to execute
 
 ```bash
-aa-orchestrator revisit [args...]
+aa-orchestrator revisit $ARGUMENTS
 ```
 
 Use `python3 "${AA_HOME:-$HOME/.local/share/autonomous-agents}/lib/orchestrator.py" revisit` if `aa-orchestrator` is not on PATH.

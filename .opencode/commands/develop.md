@@ -24,13 +24,13 @@ Run the orchestrator. Use whichever invocation works in this project (try in ord
 
 ```bash
 # 1. Globally-installed CLI (set up by install.sh — preferred)
-aa-orchestrator develop [args...]
+aa-orchestrator develop $ARGUMENTS
 
 # 2. Explicit global path via env var
-python3 "${AA_HOME:-$HOME/.local/share/autonomous-agents}/lib/orchestrator.py" develop [args...]
+python3 "${AA_HOME:-$HOME/.local/share/autonomous-agents}/lib/orchestrator.py" develop $ARGUMENTS
 
 # 3. Project-local copy (only if user vendored lib/orchestrator.py into this repo)
-python3 lib/orchestrator.py develop [args...]
+python3 lib/orchestrator.py develop $ARGUMENTS
 ```
 
 Pick the first one that's available. Pass through every argument the user gave you. Do not invent argument values.
@@ -39,7 +39,7 @@ Pick the first one that's available. Pass through every argument the user gave y
 
 ```bash
 # Initial run
-aa-orchestrator develop [args...]
+aa-orchestrator develop $ARGUMENTS
 exit_code=$?
 # Auto-continue loop
 while [ "$exit_code" -eq 3 ]; do

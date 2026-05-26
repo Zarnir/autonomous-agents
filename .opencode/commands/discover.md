@@ -18,7 +18,7 @@ and retried once if validation fails.
 ## How to execute
 
 ```bash
-aa-orchestrator discover [args...]
+aa-orchestrator discover $ARGUMENTS
 ```
 
 Use `python3 "${AA_HOME:-$HOME/.local/share/autonomous-agents}/lib/orchestrator.py" discover` if `aa-orchestrator` is not on PATH.

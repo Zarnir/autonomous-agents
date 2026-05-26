@@ -43,10 +43,12 @@ import subprocess
 import pty
 import select
 import sys
+import threading
 import time
+import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 # Deterministic spec parser (lives next to this file)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -86,6 +88,9 @@ MAX_REVIEW_CYCLES = _int_env("MAX_REVIEW_CYCLES", 2)
 MAX_TEST_RETRIES = _int_env("MAX_TEST_RETRIES", 1)
 MAX_MAKE_RETRIES = _int_env("MAX_MAKE_RETRIES", 2)
 MAX_DELEGATIONS_PER_PHASE = _int_env("MAX_DELEGATIONS_PER_PHASE", 2)
+# M24: live heartbeat tick interval during a single agent call.
+# Set 0 (or any non-positive value) to disable heartbeat ticks.
+HEARTBEAT_INTERVAL_SEC = _int_env("HEARTBEAT_INTERVAL_SEC", 30)
 AGENT_TIMEOUT_SEC = _int_env("AGENT_TIMEOUT_SEC", 600)
 OUTER_TIMEOUT_SEC = _int_env("OUTER_TIMEOUT_SEC", 480)
 
@@ -113,6 +118,9 @@ AGENT_MODELS: dict[str, str] = {}
 GLOBAL_PERSIST_STATE: Optional[dict] = None
 USE_PTY = True
 _CONFIG_RUNNER: Optional[str] = None  # set by load_config()
+# M21: registered by cmd_serve; when set, log() and finalize_story() fan out
+# events through it. None by default so the pipeline runs unchanged.
+_EVENT_BUS: Optional[object] = None
 
 
 def _coerce_int(field: str, value: Any, default: int) -> int:
@@ -128,9 +136,9 @@ def _coerce_int(field: str, value: Any, default: int) -> int:
 
 def load_config() -> dict[str, Any]:
     global MAX_REVIEW_CYCLES, MAX_TEST_RETRIES, MAX_MAKE_RETRIES
-    global MAX_DELEGATIONS_PER_PHASE
+    global MAX_DELEGATIONS_PER_PHASE, HEARTBEAT_INTERVAL_SEC
     global AGENT_TIMEOUT_SEC, OUTER_TIMEOUT_SEC, AGENT_TIMEOUTS
-    global AGENT_MODELS, _CONFIG_RUNNER
+    global AGENT_MODELS, _CONFIG_RUNNER, _AGENT_RUNNERS
 
     if not CONFIG_FILE.exists():
         return {}
@@ -157,6 +165,12 @@ def load_config() -> dict[str, Any]:
             pipe["max_delegations_per_phase"],
             MAX_DELEGATIONS_PER_PHASE,
         )
+    if "heartbeat_interval_sec" in pipe:
+        HEARTBEAT_INTERVAL_SEC = _coerce_int(
+            "pipeline.heartbeat_interval_sec",
+            pipe["heartbeat_interval_sec"],
+            HEARTBEAT_INTERVAL_SEC,
+        )
     if "agent_timeout_sec" in pipe:
         AGENT_TIMEOUT_SEC = _coerce_int("pipeline.agent_timeout_sec", pipe["agent_timeout_sec"], AGENT_TIMEOUT_SEC)
     if "outer_timeout_sec" in pipe:
@@ -178,6 +192,21 @@ def load_config() -> dict[str, Any]:
     runner_cfg = pipe.get("runner") if isinstance(pipe, dict) else None
     if isinstance(runner_cfg, str) and runner_cfg in ("opencode", "claude"):
         _CONFIG_RUNNER = runner_cfg
+
+    # M25: per-agent runner dispatch. `pipeline.agent_runners` maps agent name
+    # to runner name; unknown runner names are rejected with a warning.
+    agent_runners_cfg = pipe.get("agent_runners") if isinstance(pipe, dict) else None
+    if isinstance(agent_runners_cfg, dict):
+        _VALID_RUNNERS = ("claude", "opencode")
+        for agent_name, runner_name in agent_runners_cfg.items():
+            if isinstance(runner_name, str) and runner_name in _VALID_RUNNERS:
+                _AGENT_RUNNERS[str(agent_name)] = runner_name
+            else:
+                print(
+                    f"WARNING: pipeline.agent_runners[{agent_name!r}]={runner_name!r} "
+                    f"is not a valid runner name; valid: {_VALID_RUNNERS}. Skipping.",
+                    file=sys.stderr,
+                )
 
     # M3.2 budget — env wins, then config
     global MAX_BUDGET_USD
@@ -275,6 +304,75 @@ class VersionConflict(RuntimeError):
 
 def log(msg: str) -> None:
     print(f"[{now_iso()}] {msg}", flush=True)
+    # M21: fan out to A2A event stream subscribers when `aa-orchestrator serve`
+    # has registered a bus. No-op cost when bus is None (the default).
+    if _EVENT_BUS is not None:
+        try:
+            _EVENT_BUS.notify("event/log_appended", {"ts": now_iso(), "msg": str(msg)})
+        except Exception:  # pragma: no cover — defensive; never break log()
+            pass
+
+
+@contextlib.contextmanager
+def _agent_heartbeat(name: str, timeout: int, interval: Optional[float] = None) -> Iterator[None]:
+    """M24: emit live elapsed-time ticks during a synchronous agent call.
+
+    Wraps a synchronous block (typically `runner.run()`). A daemon thread
+    fires every `interval` seconds with an `⏱ @<name> running for Xs` log
+    line. On exit (normal OR exception), emits one `⏲ @<name> finished in Xs`
+    line so duration is always visible.
+
+    Graduated slowness warnings fire ONCE each at 5/10/20 min elapsed:
+      `⚠   @<name> elapsed 5m`
+      `⚠⚠  @<name> elapsed 10m`
+      `⚠⚠⚠ @<name> elapsed 20m — approaching timeout (<X>s remaining)`
+
+    M21 integration: if `_EVENT_BUS` is registered, ticks also fan out as
+    `event/agent_heartbeat` notifications.
+
+    Disable: pass `interval=0` (or set `HEARTBEAT_INTERVAL_SEC=0`).
+    """
+    eff_interval = interval if interval is not None else HEARTBEAT_INTERVAL_SEC
+    start = time.monotonic()
+    stop_flag = threading.Event()
+    warnings_fired = {5: False, 10: False, 20: False}
+
+    def _tick_loop() -> None:
+        while not stop_flag.wait(eff_interval):
+            elapsed = time.monotonic() - start
+            log(f"  ⏱ @{name} running for {elapsed:.0f}s (timeout {timeout}s)")
+            if _EVENT_BUS is not None:
+                try:
+                    _EVENT_BUS.notify("event/agent_heartbeat", {
+                        "agent": name,
+                        "elapsed_sec": round(elapsed, 1),
+                        "timeout": timeout,
+                    })
+                except Exception:  # pragma: no cover — defensive
+                    pass
+            # Graduated warnings — each fires once per heartbeat instance.
+            for threshold_min in (5, 10, 20):
+                if not warnings_fired[threshold_min] and elapsed >= threshold_min * 60:
+                    warnings_fired[threshold_min] = True
+                    marker = "⚠" * (1 if threshold_min == 5 else 2 if threshold_min == 10 else 3)
+                    suffix = ""
+                    if threshold_min == 20:
+                        remaining = max(0, timeout - int(elapsed))
+                        suffix = f" — approaching timeout ({remaining}s remaining)"
+                    log(f"  {marker} @{name} elapsed {threshold_min}m{suffix}")
+
+    tick_thread: Optional[threading.Thread] = None
+    if eff_interval > 0:
+        tick_thread = threading.Thread(target=_tick_loop, daemon=True)
+        tick_thread.start()
+    try:
+        yield
+    finally:
+        stop_flag.set()
+        if tick_thread is not None:
+            tick_thread.join(timeout=2.0)
+        elapsed = time.monotonic() - start
+        log(f"  ⏲ @{name} finished in {elapsed:.1f}s")
 
 
 def append_execution_log(data: dict, message: str) -> None:
@@ -341,22 +439,55 @@ except ImportError:  # pragma: no cover — defensive guard
     _WIZARD_AVAILABLE = False
 
 
-_RUNNER_INSTANCE: Optional[object] = None  # cached after first call_agent
+# M25: per-agent runner cache. Keys are runner names ("claude", "opencode");
+# values are Runner instances. Replaces the prior singleton so a single project
+# can route strategic agents through Claude Code while routing labor agents
+# through OpenCode.
+_RUNNER_INSTANCES: dict[str, object] = {}
+
+# M25: populated by load_config from `pipeline.agent_runners`. Maps agent name
+# (e.g. "planner") → runner name (e.g. "claude"). Unspecified agents fall
+# through to the project-wide default.
+_AGENT_RUNNERS: dict[str, str] = {}
 
 
-def _get_runner() -> object:  # pragma: no cover — production-only; tests stub call_agent
-    global _RUNNER_INSTANCE
-    if _RUNNER_INSTANCE is not None:
-        return _RUNNER_INSTANCE
-    if not _RUNNERS_AVAILABLE:
+def _get_runner_for_agent(name: str) -> object:
+    """M25: resolve the runner instance for the given agent.
+
+    Lookup order (first non-empty wins):
+      1. `AA_RUNNER_<NAME>` env var (escape hatch for one-off testing)
+      2. `pipeline.agent_runners[<name>]` from config (tiered cost-model entry)
+      3. `AA_RUNNER` env var (project-wide override)
+      4. `pipeline.runner` from config (project default)
+      5. `select_runner(None)` auto-detect
+
+    Runner instances are cached per runner-name. Two agents that map to the
+    same runner share the same cached instance.
+    """
+    if not _RUNNERS_AVAILABLE:  # pragma: no cover — defensive against runners.py missing
         raise RuntimeError(
             "lib/runners.py is missing — re-run install.sh or ensure runners.py "
             "is installed alongside orchestrator.py."
         )
-    preference = os.environ.get("AA_RUNNER") or _CONFIG_RUNNER
-    _RUNNER_INSTANCE = select_runner(preference if preference else None)
-    log(f"  runner: {_RUNNER_INSTANCE.name}")
-    return _RUNNER_INSTANCE
+
+    # Per-agent env override: e.g. AA_RUNNER_PLANNER=claude
+    per_agent_env = os.environ.get(f"AA_RUNNER_{name.upper().replace('-', '_')}")
+    preference = (
+        per_agent_env
+        or _AGENT_RUNNERS.get(name)
+        or os.environ.get("AA_RUNNER")
+        or _CONFIG_RUNNER
+    )
+
+    cache_key = preference or "_auto_"
+    cached = _RUNNER_INSTANCES.get(cache_key)
+    if cached is not None:
+        return cached
+
+    instance = select_runner(preference if preference else None)
+    _RUNNER_INSTANCES[cache_key] = instance
+    log(f"  runner: {instance.name} (for @{name})")
+    return instance
 
 
 def call_agent(
@@ -378,7 +509,7 @@ def call_agent(
         + (f", cwd={cwd}" if cwd else "")
         + ")"
     )
-    runner = _get_runner()
+    runner = _get_runner_for_agent(name)
 
     # M2.3: prepend cross-story context so each agent benefits from prior work
     context = load_project_context()
@@ -401,16 +532,19 @@ def call_agent(
         )
 
     # M11: wrap the runner invocation in a transient-failure retry loop.
+    # M24: wrap in _agent_heartbeat so users see live elapsed-time ticks during
+    # slow LLM calls instead of staring at an idle terminal.
     def _invoke() -> str:
         try:
-            return runner.run(
-                name,
-                prompt,
-                timeout=effective_timeout,
-                cwd=cwd,
-                model=effective_model,
-                skill=skill,
-            )
+            with _agent_heartbeat(name, timeout=effective_timeout):
+                return runner.run(
+                    name,
+                    prompt,
+                    timeout=effective_timeout,
+                    cwd=cwd,
+                    model=effective_model,
+                    skill=skill,
+                )
         except AgentRunnerError as e:
             # Translate runner error → AgentError with transient/hard classification
             transient = False
@@ -805,6 +939,11 @@ def cascade_fail(data: dict, failed_story_id: str, reason: str) -> int:
                 dep = find_story(data, dep_id)
                 if dep and dep.get("status") in ("failed", "blocked"):
                     s["status"] = "blocked"
+                    # M24: per-story failure_reason for visibility in cmd_status
+                    s["failure_reason"] = (
+                        f"cascade from {dep_id} ({dep.get('status')})"
+                    )
+                    s["completed_at"] = now_iso()
                     data.setdefault("blocked_stories", []).append(s["id"])
                     append_execution_log(
                         data,
@@ -2186,13 +2325,20 @@ def build_review_prompt(
 
 def parse_verdict(text: str) -> str:
     upper = text.upper()
-    is_convergence = "[CONVERGENCE]" in upper or "CONVERGENCE" in upper
     if "VERDICT:" in upper:
         tail = upper.split("VERDICT:", 1)[1].splitlines()[0].strip()
+        # M22: strip markdown formatting that leaks in from `**Verdict:**` /
+        # `_Verdict:_` patterns (real-world regression with MiniMax-M2.7 via
+        # OpenCode — Claude normalizes these away, MiniMax emits them verbatim).
+        tail = tail.strip("*").strip("_").strip()
     else:
         tail = "UNKNOWN"
-    suffix = " [CONVERGENCE]" if is_convergence else ""
-    return tail + suffix
+    # M22: only append " [CONVERGENCE]" if the marker isn't already in the tail
+    # (prevents the historical "NEEDS_CHANGES [CONVERGENCE] [CONVERGENCE]" doubling).
+    is_convergence = "CONVERGENCE" in upper
+    if is_convergence and "CONVERGENCE" not in tail:
+        return tail + " [CONVERGENCE]"
+    return tail
 
 
 def is_pass(verdict: str, prior_was_pass: bool = False) -> bool:
@@ -2512,7 +2658,24 @@ def finalize_story(data: dict, sid: str, status: str, reason: Optional[str]) -> 
     story = find_story(data, sid)
     if story is None:
         die(f"finalize_story: cannot find {sid}")
+    from_status = story.get("status")
     story["status"] = status
+    # M24: stamp the terminal-transition time + store failure_reason for visibility
+    story["completed_at"] = now_iso()
+    if status in ("failed", "blocked") and reason:
+        story["failure_reason"] = reason
+    # M21: emit a status-change event for A2A subscribers
+    if _EVENT_BUS is not None:
+        try:
+            _EVENT_BUS.notify("event/story_status_changed", {
+                "story_id": sid,
+                "from": from_status,
+                "to": status,
+                "reason": reason,
+                "commit_hash": (story.get("artifacts") or {}).get("commit_hash"),
+            })
+        except Exception:  # pragma: no cover — defensive
+            pass
     if status == "completed":
         data.setdefault("completed_stories", []).append(sid)
         if data.get("current_story_id") == sid:
@@ -3894,12 +4057,103 @@ def cmd_wizard(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """M21: Run a pipeline subcommand while exposing a JSON-RPC event stream.
+
+    Events emitted from `log()` and `finalize_story()` are broadcast over a
+    WebSocket on `args.host:args.port` as JSON-RPC 2.0 notifications.
+    Read-only — subscribers cannot mutate state.
+
+    Example:
+        aa-orchestrator serve --port 8765 --cmd develop
+        aa-orchestrator serve --port 8765 --cmd status
+    """
+    try:
+        from event_stream import EventBus, WebSocketServer
+    except ImportError as e:  # pragma: no cover — defensive; module ships with project
+        die(f"event_stream module missing: {e}")
+
+    global _EVENT_BUS
+    bus = EventBus()
+    server = WebSocketServer(bus, host=args.host, port=args.port)
+    server.start()
+    _EVENT_BUS = bus
+    log(f"📡 Event stream: ws://{args.host}:{server.port}")
+
+    try:
+        inner = (getattr(args, "cmd_to_run", None) or "status").lower()
+        dispatcher = {
+            "develop": cmd_develop,
+            "resume": cmd_resume,
+            "status": cmd_status,
+        }
+        if inner not in dispatcher:
+            die(f"unknown --cmd: {inner!r} (valid: {sorted(dispatcher)})")
+        # Pad the inner command's expected fields with safe defaults so a
+        # minimal `serve` namespace works for any inner.
+        inner_args = argparse.Namespace(
+            cmd=inner,
+            spec=getattr(args, "spec", None),
+            story=getattr(args, "story", None),
+            from_story=getattr(args, "from_story", None),
+            dry_run=getattr(args, "dry_run", False),
+            force=getattr(args, "force", False),
+        )
+        return dispatcher[inner](inner_args)
+    finally:
+        _EVENT_BUS = None
+        server.stop()
+        # Use plain print — _EVENT_BUS is now None so log() won't fan out anyway
+        print(f"[{now_iso()}] 📡 Event stream stopped.", flush=True)
+
+
+def _format_duration(seconds: float) -> str:
+    """M24: format an elapsed-seconds float as '4m32s' / '42s' / '1h12m'."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m}m{s:02d}s"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    return f"{h}h{m:02d}m"
+
+
+def _parse_iso_to_unix(ts: Optional[str]) -> Optional[float]:
+    """M24: parse an ISO 'YYYY-MM-DDTHH:MM:SSZ' string to a Unix timestamp.
+    Returns None for missing/malformed input so callers can skip the duration line."""
+    if not ts:
+        return None
+    try:
+        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):  # pragma: no cover — defensive against stale schemas
+        return None
+
+
+def _story_duration_sec(story: dict) -> Optional[float]:
+    """Compute elapsed seconds for a story. Uses completed_at-started_at when
+    both are set, otherwise now-started_at for in-progress stories."""
+    start = _parse_iso_to_unix(story.get("started_at"))
+    if start is None:
+        return None
+    end_ts = story.get("completed_at")
+    if end_ts:
+        end = _parse_iso_to_unix(end_ts)
+        if end is None:
+            return None
+        return max(0.0, end - start)
+    return max(0.0, datetime.now(timezone.utc).timestamp() - start)
+
+
 def cmd_status(_: argparse.Namespace) -> int:
     data = read_progress()
     total = len(all_stories(data))
     by: dict[str, int] = {}
+    bucketed: dict[str, list[dict]] = {}
     for s in all_stories(data):
         by[s["status"]] = by.get(s["status"], 0) + 1
+        bucketed.setdefault(s["status"], []).append(s)
     print(f"Schema:      {data.get('schema_version')}")
     print(f"Status:      {data.get('status')}")
     print(f"Total:       {total} stories")
@@ -3907,7 +4161,42 @@ def cmd_status(_: argparse.Namespace) -> int:
         "completed", "in_progress", "review_pass", "test_written",
         "implemented", "pending", "blocked", "failed",
     ):
-        if k in by:
+        if k not in by:
+            continue
+        # M24: per-bucket detail lines for buckets where context matters.
+        if k == "completed":
+            durations = [
+                (s, _story_duration_sec(s))
+                for s in bucketed.get(k, [])
+            ]
+            durations = [(s, d) for s, d in durations if d is not None]
+            if durations:
+                avg = sum(d for _, d in durations) / len(durations)
+                slowest = max(durations, key=lambda sd: sd[1])
+                slow_sid = slowest[0]["id"]
+                slow_dur = _format_duration(slowest[1])
+                print(
+                    f"  {k:14s} {by[k]}     "
+                    f"avg {_format_duration(avg)}, slowest {slow_sid} ({slow_dur})"
+                )
+            else:
+                print(f"  {k:14s} {by[k]}")
+        elif k == "in_progress":
+            print(f"  {k:14s} {by[k]}")
+            for s in bucketed.get(k, []):
+                dur = _story_duration_sec(s)
+                if dur is not None:
+                    print(f"    {s['id']} — {_format_duration(dur)} elapsed")
+                else:
+                    print(f"    {s['id']}")
+        elif k in ("blocked", "failed"):
+            print(f"  {k:14s} {by[k]}")
+            for s in bucketed.get(k, []):
+                reason = s.get("failure_reason") or "(no reason recorded)"
+                dur = _story_duration_sec(s)
+                dur_str = f" (ran {_format_duration(dur)})" if dur is not None else ""
+                print(f"    {s['id']} — {reason}{dur_str}")
+        else:
             print(f"  {k:14s} {by[k]}")
     print(f"Current:     {data.get('current_story_id')}")
     next_s = next_eligible_story(data)
@@ -4376,6 +4665,13 @@ def main() -> int:
     ag.add_argument("--skill", default=None, help="Skill ID to dispatch")
     ag.add_argument("prompt", help="User prompt for the agent")
 
+    srv = sub.add_parser("serve", help="Run a pipeline command while exposing a JSON-RPC event stream over WebSocket (M21)")
+    srv.add_argument("--port", type=int, default=8765, help="Port to bind (default 8765; 0 = ephemeral)")
+    srv.add_argument("--host", default="127.0.0.1", help="Host to bind (default 127.0.0.1)")
+    srv.add_argument("--cmd", dest="cmd_to_run", default="status",
+                     choices=["develop", "resume", "status"],
+                     help="Pipeline subcommand to run while the stream is open (default: status)")
+
     args = parser.parse_args()
     try:
         if args.cmd == "develop":
@@ -4408,6 +4704,8 @@ def main() -> int:
             return cmd_rfc(args)
         if args.cmd == "agent":
             return cmd_agent(args)
+        if args.cmd == "serve":
+            return cmd_serve(args)
     except KeyboardInterrupt:
         log("\n⚠ Interrupted — state preserved in progress.json. Run `resume` to continue.")
         return EXIT_MORE_WORK

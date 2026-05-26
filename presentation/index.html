@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>autonomous-agents — Tell it what to build. It writes the code.</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+        },
+        colors: {
+          ink: {
+            900: '#08090b',
+            800: '#0e1014',
+            700: '#15181d',
+            600: '#1d2127',
+          },
+          accent: {
+            50:  '#ecfdf5',
+            300: '#6ee7b7',
+            400: '#34d399',
+            500: '#10b981',
+            600: '#059669',
+          },
+        },
+      },
+    },
+  };
+</script>
+<style>
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: #08090b;
+    color: #e4e4e7;
+    overflow: hidden;
+  }
+  code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
+
+  /* Slide stack */
+  .slide {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    transition: opacity .35s ease, transform .35s ease;
+    overflow-y: auto;
+  }
+  .slide.active {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  /* Subtle aurora glow on the hero */
+  .aurora {
+    background:
+      radial-gradient(60rem 32rem at 20% -10%, rgba(16,185,129,0.18), transparent 60%),
+      radial-gradient(50rem 28rem at 110% 110%, rgba(59,130,246,0.14), transparent 60%),
+      #08090b;
+  }
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 48px 48px;
+    background-position: -1px -1px;
+  }
+
+  /* Chip + card primitives */
+  .chip {
+    display: inline-flex; align-items: center; gap: .4rem;
+    padding: .25rem .7rem; border-radius: 999px;
+    font-size: .75rem; letter-spacing: .02em;
+    background: rgba(16,185,129,0.08);
+    color: #6ee7b7;
+    border: 1px solid rgba(16,185,129,0.18);
+  }
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+  }
+  .card-hover:hover {
+    border-color: rgba(16,185,129,0.30);
+    background: linear-gradient(180deg, rgba(16,185,129,0.06), rgba(255,255,255,0.02));
+  }
+  .kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .7rem;
+    padding: .15rem .45rem;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #d4d4d8;
+  }
+
+  /* Phase pill */
+  .phase {
+    display: inline-flex; flex-direction: column; align-items: center;
+    padding: .9rem 1.1rem; border-radius: 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    min-width: 9rem;
+  }
+  .phase-arrow {
+    color: #52525b; user-select: none;
+  }
+
+  /* Progress dots */
+  .dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: rgba(255,255,255,0.18);
+    transition: all .25s ease;
+    cursor: pointer;
+  }
+  .dot.active { width: 22px; border-radius: 999px; background: #34d399; }
+
+  /* Code block */
+  .codeblock {
+    background: #0a0c10;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .82rem;
+    line-height: 1.55;
+    overflow-x: auto;
+  }
+  .codeblock .c-cmt { color: #71717a; }
+  .codeblock .c-kw  { color: #a78bfa; }
+  .codeblock .c-str { color: #6ee7b7; }
+  .codeblock .c-num { color: #fbbf24; }
+
+  /* Scrollbars softened */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; }
+
+  /* ------- Architecture diagram primitives ------- */
+  .arch-box {
+    border: 1px solid rgba(255,255,255,0.10);
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+    border-radius: 12px;
+    padding: .85rem 1rem;
+    text-align: center;
+    font-family: 'Inter', sans-serif;
+  }
+  .arch-box.orchestrator {
+    border-color: rgba(16,185,129,0.35);
+    background: linear-gradient(180deg, rgba(16,185,129,0.10), rgba(16,185,129,0.02));
+  }
+  .arch-box.runner {
+    border-color: rgba(167,139,250,0.30);
+    background: linear-gradient(180deg, rgba(167,139,250,0.06), rgba(255,255,255,0.01));
+  }
+  .arch-box.persist {
+    border-color: rgba(59,130,246,0.30);
+    background: linear-gradient(180deg, rgba(59,130,246,0.06), rgba(255,255,255,0.01));
+  }
+  .arch-box.agents {
+    border-color: rgba(251,191,36,0.30);
+    background: linear-gradient(180deg, rgba(251,191,36,0.05), rgba(255,255,255,0.01));
+  }
+  .arch-box .label {
+    font-size: .7rem; letter-spacing: .12em; text-transform: uppercase;
+    color: #71717a; margin-bottom: .25rem;
+  }
+  .arch-box .title {
+    font-size: 1rem; font-weight: 600; color: #e4e4e7;
+  }
+  .arch-box .detail {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .72rem; color: #a1a1aa; margin-top: .25rem;
+  }
+
+  /* Vertical connector dot between boxes */
+  .connector { display: flex; justify-content: center; }
+  .connector::before {
+    content: '';
+    display: block;
+    width: 1px; height: 22px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.30), rgba(255,255,255,0.05));
+  }
+  .connector.thin::before { height: 14px; }
+  .connector .arrow {
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid rgba(255,255,255,0.30);
+    margin-top: -1px;
+  }
+
+  /* Sub-modules row inside orchestrator block */
+  .modules {
+    display: flex; flex-wrap: wrap; gap: .35rem; justify-content: center;
+    margin-top: .55rem;
+  }
+  .module {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .68rem;
+    padding: .2rem .55rem;
+    background: rgba(16,185,129,0.07);
+    border: 1px solid rgba(16,185,129,0.20);
+    border-radius: 6px;
+    color: #6ee7b7;
+  }
+
+  /* State machine ------------------------------------------ */
+  .state {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: .55rem 1rem; border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.03);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .8rem; color: #d4d4d8;
+    white-space: nowrap;
+  }
+  .state.pending     { border-color: rgba(161,161,170,0.30); }
+  .state.progress    { border-color: rgba(59,130,246,0.40);  background: rgba(59,130,246,0.07); color: #93c5fd; }
+  .state.intermediate{ border-color: rgba(251,191,36,0.30);  background: rgba(251,191,36,0.04); color: #fcd34d; }
+  .state.completed   { border-color: rgba(16,185,129,0.45);  background: rgba(16,185,129,0.10); color: #6ee7b7; }
+  .state.failed      { border-color: rgba(244,63,94,0.45);   background: rgba(244,63,94,0.08);  color: #fda4af; }
+  .state.blocked     { border-color: rgba(249,115,22,0.40);  background: rgba(249,115,22,0.07); color: #fdba74; }
+
+  .h-arrow {
+    display: inline-flex; align-items: center; color: #52525b;
+    font-family: 'JetBrains Mono', monospace; font-size: .75rem;
+    padding: 0 .25rem;
+  }
+
+  /* Sequence diagram timeline ------------------------------- */
+  .timeline {
+    position: relative;
+    padding-left: 2rem;
+    border-left: 1px dashed rgba(255,255,255,0.10);
+  }
+  .tl-row {
+    position: relative;
+    padding: .5rem 0 .5rem .25rem;
+    display: grid;
+    grid-template-columns: 7rem 1fr;
+    gap: 1rem;
+    align-items: start;
+  }
+  .tl-row::before {
+    content: '';
+    position: absolute;
+    left: -2.35rem; top: .85rem;
+    width: 8px; height: 8px; border-radius: 999px;
+    background: #34d399;
+    box-shadow: 0 0 0 4px rgba(16,185,129,0.12);
+  }
+  .tl-row.muted::before { background: #52525b; box-shadow: 0 0 0 4px rgba(82,82,91,0.18); }
+  .tl-actor {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .72rem; color: #71717a;
+    padding-top: .15rem;
+  }
+  .tl-event {
+    color: #e4e4e7; font-size: .9rem;
+  }
+  .tl-event .sub {
+    display: block; color: #71717a; font-size: .75rem; margin-top: .15rem;
+  }
+  .tl-event .gate {
+    display: inline-block; margin-left: .35rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .65rem;
+    padding: .05rem .4rem;
+    border-radius: 4px;
+    background: rgba(16,185,129,0.10);
+    color: #6ee7b7;
+    border: 1px solid rgba(16,185,129,0.25);
+  }
+  .tl-event .gate.fail {
+    background: rgba(244,63,94,0.10); color: #fda4af;
+    border-color: rgba(244,63,94,0.25);
+  }
+</style>
+</head>
+<body class="aurora">
+
+<!-- Persistent UI: corner counter + bottom dots + controls -->
+<div class="fixed top-4 right-6 text-xs text-zinc-500 mono z-50">
+  <span id="slide-num">01</span><span class="text-zinc-700"> / </span><span id="slide-total">12</span>
+</div>
+
+<div class="fixed top-4 left-6 z-50 flex items-center gap-2">
+  <div class="w-2 h-2 rounded-full bg-accent-400 animate-pulse"></div>
+  <span class="text-xs uppercase tracking-widest text-zinc-500">autonomous-agents · deck</span>
+</div>
+
+<div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2" id="dots"></div>
+
+<div class="fixed bottom-6 right-6 z-50 text-xs text-zinc-500 flex items-center gap-3">
+  <span class="kbd">←</span><span class="kbd">→</span>
+  <span>or</span>
+  <span class="kbd">Space</span>
+  <span>to navigate</span>
+</div>
+
+<!-- ============================================================== -->
+<!-- Slide 1 — Hero                                                  -->
+<!-- ============================================================== -->
+<section class="slide active grid-bg" data-idx="0">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-8">
+      <span class="w-1.5 h-1.5 rounded-full bg-accent-400"></span>
+      v1.0 · 948 tests · 100% coverage
+    </span>
+    <h1 class="text-6xl md:text-7xl font-extrabold leading-[1.05] tracking-tight">
+      <span class="text-zinc-100">autonomous-</span><span class="bg-gradient-to-r from-accent-400 via-accent-300 to-emerald-200 bg-clip-text text-transparent">agents</span>
+    </h1>
+    <p class="mt-6 text-2xl md:text-3xl text-zinc-300 max-w-3xl leading-snug">
+      Tell it what to build. It writes the tests, writes the code,
+      runs the tests, commits — story by story, sprint by sprint,
+      until it's done.
+    </p>
+    <div class="mt-12 grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl">
+      <div class="card p-4">
+        <div class="text-3xl font-bold text-accent-400">19</div>
+        <div class="text-xs text-zinc-500 mt-1">specialized agents</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-3xl font-bold text-accent-400">21</div>
+        <div class="text-xs text-zinc-500 mt-1">reusable skills</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-3xl font-bold text-accent-400">0</div>
+        <div class="text-xs text-zinc-500 mt-1">runtime deps</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-3xl font-bold text-accent-400">2</div>
+        <div class="text-xs text-zinc-500 mt-1">runners supported</div>
+      </div>
+    </div>
+    <p class="mt-12 text-sm text-zinc-500 mono">
+      Works with Claude Code · OpenCode · MiniMax · or any combination.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 2 — The Problem                                           -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="1">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">The problem</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      AI coding tools are great at one-shot tasks.
+      <span class="text-zinc-400">They break down on multi-step work.</span>
+    </h2>
+    <div class="mt-10 grid md:grid-cols-2 gap-5">
+      <div class="card p-5 card-hover">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Hallucination</div>
+        <p class="text-zinc-300">"Implement X with library Y" → uses functions that don't exist; tests never written; PR looks fine.</p>
+      </div>
+      <div class="card p-5 card-hover">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Scope drift</div>
+        <p class="text-zinc-300">"Add login" → rewrites your entire auth stack; touches 40 files; you can't review the diff.</p>
+      </div>
+      <div class="card p-5 card-hover">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">No tests</div>
+        <p class="text-zinc-300">Claims "done" — but tests were never run. CI catches it three commits later.</p>
+      </div>
+      <div class="card p-5 card-hover">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Lost state</div>
+        <p class="text-zinc-300">You quit the session; tomorrow you're starting over. The agent has no memory of yesterday.</p>
+      </div>
+    </div>
+    <p class="mt-10 text-lg text-zinc-400 leading-relaxed max-w-3xl">
+      The problem isn't the LLM — it's the lack of <span class="text-zinc-200">structure around it</span>:
+      planning, scope enforcement, real test verification, durable state, retries that don't waste budget.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 3 — The Solution                                          -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="2">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">The solution</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      A <span class="text-accent-400">deterministic Python orchestrator</span>
+      driving <span class="text-zinc-300">LLM agents per role.</span>
+    </h2>
+    <p class="mt-6 text-xl text-zinc-400 leading-relaxed max-w-3xl">
+      SCRUM-style sprints. Real TDD enforcement (failing test BEFORE code).
+      Resumable state machine. Every commit is gated on independent test re-run.
+    </p>
+    <div class="mt-10 grid md:grid-cols-3 gap-4">
+      <div class="card p-5">
+        <div class="text-2xl font-bold text-zinc-200 mb-2">Plans</div>
+        <p class="text-sm text-zinc-400">One-line idea → epics → stories → tasks → acceptance criteria. Deterministic parser, no LLM hallucination.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-2xl font-bold text-zinc-200 mb-2">Executes</div>
+        <p class="text-sm text-zinc-400">Story by story, 6 specialized agents per story. Isolated git worktree per story. Scope enforced by <span class="mono text-accent-400">@guard</span>.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-2xl font-bold text-zinc-200 mb-2">Verifies</div>
+        <p class="text-sm text-zinc-400">Orchestrator runs the tests itself — never trusts the agent's "GREEN" claim. Production gates block bad sprints.</p>
+      </div>
+    </div>
+    <div class="mt-10 codeblock max-w-3xl">
+      <span class="c-cmt"># One command. Walk away. Wake up to a working backlog.</span><br/>
+      $ <span class="c-kw">aa-orchestrator</span> sprint cycle
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 4 — The 6-phase Pipeline                                  -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="3">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">Per-story pipeline</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      Six phases, one commit.
+    </h2>
+    <p class="mt-4 text-lg text-zinc-400 max-w-3xl">
+      Every story flows through the same deterministic sequence. Each agent has scoped permissions, fresh context, and one job.
+    </p>
+
+    <div class="mt-12 flex flex-wrap items-center justify-center gap-3">
+      <div class="phase">
+        <div class="text-accent-400 mono text-sm">@check</div>
+        <div class="text-xs text-zinc-500 mt-1">design review</div>
+      </div>
+      <span class="phase-arrow text-xl">→</span>
+      <div class="phase">
+        <div class="text-accent-400 mono text-sm">@simplify</div>
+        <div class="text-xs text-zinc-500 mt-1">YAGNI check</div>
+      </div>
+      <span class="phase-arrow text-xl">→</span>
+      <div class="phase">
+        <div class="text-accent-400 mono text-sm">@test</div>
+        <div class="text-xs text-zinc-500 mt-1">writes failing tests</div>
+      </div>
+      <span class="phase-arrow text-xl">→</span>
+      <div class="phase">
+        <div class="text-accent-400 mono text-sm">@make</div>
+        <div class="text-xs text-zinc-500 mt-1">implements code</div>
+      </div>
+      <span class="phase-arrow text-xl">→</span>
+      <div class="phase">
+        <div class="text-accent-400 mono text-sm">@guard</div>
+        <div class="text-xs text-zinc-500 mt-1">scope audit</div>
+      </div>
+      <span class="phase-arrow text-xl">→</span>
+      <div class="phase">
+        <div class="text-accent-400 mono text-sm">@commit</div>
+        <div class="text-xs text-zinc-500 mt-1">one commit, one branch</div>
+      </div>
+    </div>
+
+    <div class="mt-12 max-w-3xl">
+      <div class="card p-5">
+        <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">Between every phase</div>
+        <div class="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm text-zinc-400">
+          <div>✓ State fsync'd to <span class="mono text-accent-400">progress.json</span></div>
+          <div>✓ Optimistic concurrency via <span class="mono text-accent-400">version</span> field</div>
+          <div>✓ Worktree isolated per story</div>
+          <div>✓ Budget cap checked on every LLM call</div>
+          <div>✓ Cost tracked per agent</div>
+          <div>✓ Resumable from any interruption</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 5 — System architecture (component diagram)               -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="4">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-4">Architecture · system view</span>
+    <h2 class="text-3xl md:text-4xl font-bold leading-tight mb-6">
+      Layered, single-writer, deterministic core.
+    </h2>
+
+    <div class="grid md:grid-cols-12 gap-3 items-start">
+      <!-- Left column: vertical stack of layers -->
+      <div class="md:col-span-7">
+        <!-- Layer: User -->
+        <div class="arch-box">
+          <div class="label">Layer 0 · entry point</div>
+          <div class="title">👤 Developer</div>
+          <div class="detail">aa-orchestrator CLI · /sprint /develop /resume slash commands</div>
+        </div>
+        <div class="connector thin"><div></div></div>
+
+        <!-- Layer: Orchestrator -->
+        <div class="arch-box orchestrator">
+          <div class="label">Layer 1 · orchestrator</div>
+          <div class="title">Deterministic Python state machine</div>
+          <div class="detail">lib/orchestrator.py · 2,564 LOC · 100% covered · zero LLM calls</div>
+          <div class="modules">
+            <span class="module">spec_parser</span>
+            <span class="module">planner</span>
+            <span class="module">run_loop</span>
+            <span class="module">retry</span>
+            <span class="module">cost_tracker</span>
+            <span class="module">event_bus</span>
+            <span class="module">cascade_fail</span>
+            <span class="module">finalize_story</span>
+          </div>
+        </div>
+        <div class="connector"><div class="arrow"></div></div>
+
+        <!-- Layer: Runners + Agents/Skills side-by-side -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="arch-box runner">
+            <div class="label">Layer 2 · runners</div>
+            <div class="title">Runner adapters</div>
+            <div class="detail">lib/runners.py · 352 LOC</div>
+            <div class="modules">
+              <span class="module" style="background:rgba(167,139,250,0.08); color:#c4b5fd; border-color:rgba(167,139,250,0.25);">ClaudeCodeRunner</span>
+              <span class="module" style="background:rgba(167,139,250,0.08); color:#c4b5fd; border-color:rgba(167,139,250,0.25);">OpenCodeRunner</span>
+            </div>
+            <div class="detail mt-2">per-agent dispatch (M25)</div>
+          </div>
+          <div class="arch-box agents">
+            <div class="label">Layer 3 · LLM workers</div>
+            <div class="title">Agents · Skills</div>
+            <div class="detail">.opencode/agents/*.md · .opencode/skills/*.md</div>
+            <div class="modules">
+              <span class="module" style="background:rgba(251,191,36,0.07); color:#fcd34d; border-color:rgba(251,191,36,0.25);">19 agents</span>
+              <span class="module" style="background:rgba(251,191,36,0.07); color:#fcd34d; border-color:rgba(251,191,36,0.25);">21 skills</span>
+              <span class="module" style="background:rgba(251,191,36,0.07); color:#fcd34d; border-color:rgba(251,191,36,0.25);">DELEGATE_TO</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right column: persistence + event stream -->
+      <div class="md:col-span-5 space-y-3">
+        <div class="arch-box persist text-left">
+          <div class="label">Persistence</div>
+          <div class="title">Single source of truth</div>
+          <div class="text-xs text-zinc-400 mt-2 space-y-1.5 mono">
+            <div>.opencode/progress.json <span class="text-zinc-600">← fsync'd per transition</span></div>
+            <div>.opencode/worktrees/&lt;story&gt;/ <span class="text-zinc-600">← isolated git worktree</span></div>
+            <div>docs/specs/epics/*.md <span class="text-zinc-600">← spec inputs</span></div>
+            <div>docs/sprints/NN-plan.md <span class="text-zinc-600">← per-sprint plan</span></div>
+            <div>docs/sprints/NN-retro.md <span class="text-zinc-600">← retrospective</span></div>
+            <div>docs/rfc/*.md <span class="text-zinc-600">← human escalation</span></div>
+          </div>
+        </div>
+        <div class="arch-box text-left" style="border-color:rgba(244,114,182,0.30); background:linear-gradient(180deg,rgba(244,114,182,0.05),rgba(255,255,255,0.01));">
+          <div class="label" style="color:#f9a8d4;">Optional · M21</div>
+          <div class="title">JSON-RPC event stream</div>
+          <div class="text-xs text-zinc-400 mt-2 mono">
+            aa-orchestrator serve --port 8765<br/>
+            <span class="text-zinc-600">→ event/log_appended</span><br/>
+            <span class="text-zinc-600">→ event/story_status_changed</span><br/>
+            <span class="text-zinc-600">→ event/agent_heartbeat</span>
+          </div>
+        </div>
+        <div class="arch-box text-left" style="border-color:rgba(148,163,184,0.25);">
+          <div class="label">Concurrency</div>
+          <div class="text-xs text-zinc-400 mt-1">
+            Optimistic locking via <span class="mono text-zinc-200">version</span> field on every <span class="mono">progress.json</span> write. Single-writer guarantee.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 6 — Story lifecycle (state machine)                       -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="5">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-4">Architecture · story lifecycle</span>
+    <h2 class="text-3xl md:text-4xl font-bold leading-tight mb-2">
+      Each story is a finite state machine.
+    </h2>
+    <p class="text-zinc-400 max-w-3xl">
+      Every story passes through these states. Persisted on disk after every transition — so any kill mid-flight resumes cleanly.
+    </p>
+
+    <!-- Happy path -->
+    <div class="mt-8">
+      <div class="text-xs uppercase tracking-widest text-zinc-500 mb-3">Happy path</div>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="state pending">pending</span>
+        <span class="h-arrow">— run_story →</span>
+        <span class="state progress">in_progress</span>
+        <span class="h-arrow">— @check + @simplify PASS →</span>
+        <span class="state intermediate">review_pass</span>
+        <span class="h-arrow">— @test GREEN →</span>
+        <span class="state intermediate">test_written</span>
+        <span class="h-arrow">— @make + tests GREEN →</span>
+        <span class="state intermediate">implemented</span>
+        <span class="h-arrow">— @guard PASS + @commit →</span>
+        <span class="state completed">completed</span>
+      </div>
+    </div>
+
+    <!-- Failure paths -->
+    <div class="mt-8">
+      <div class="text-xs uppercase tracking-widest text-zinc-500 mb-3">Failure paths</div>
+      <div class="grid md:grid-cols-2 gap-3">
+        <div class="card p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="state progress">any in-flight state</span>
+            <span class="h-arrow">— AgentError →</span>
+            <span class="state failed">failed</span>
+          </div>
+          <p class="text-xs text-zinc-400">Hard agent failure (timeout, model error, contract violation after retries).</p>
+        </div>
+        <div class="card p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="state pending">pending</span>
+            <span class="h-arrow">— upstream fail →</span>
+            <span class="state blocked">blocked</span>
+          </div>
+          <p class="text-xs text-zinc-400"><span class="mono">cascade_fail</span> propagates upstream failure to all dependents.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recovery -->
+    <div class="mt-8">
+      <div class="text-xs uppercase tracking-widest text-zinc-500 mb-3">Recovery</div>
+      <div class="grid md:grid-cols-3 gap-3 text-xs">
+        <div class="card p-4">
+          <div class="mono text-accent-400 mb-1">resume</div>
+          <p class="text-zinc-400">Stuck in <span class="mono">in_progress</span>/<span class="mono">review_pass</span>/<span class="mono">test_written</span> → reset to <span class="mono">pending</span>; re-run from last clean checkpoint.</p>
+        </div>
+        <div class="card p-4">
+          <div class="mono text-accent-400 mb-1">resume --retry-failed</div>
+          <p class="text-zinc-400">All <span class="state failed" style="font-size: .65rem; padding: .15rem .5rem;">failed</span> stories → back to <span class="mono">pending</span>.</p>
+        </div>
+        <div class="card p-4">
+          <div class="mono text-accent-400 mb-1">resume --retry-blocked</div>
+          <p class="text-zinc-400">All <span class="state blocked" style="font-size: .65rem; padding: .15rem .5rem;">blocked</span> stories → back to <span class="mono">pending</span>.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-6 text-xs text-zinc-500 mono">
+      Per-story timing recorded (M24): started_at · completed_at · failure_reason — all surfaced in <span class="text-zinc-300">aa-orchestrator status</span>.
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 7 — Per-story execution timeline (sequence)               -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="6">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-4">Architecture · per-story timeline</span>
+    <h2 class="text-3xl md:text-4xl font-bold leading-tight mb-2">
+      One story, top to bottom.
+    </h2>
+    <p class="text-zinc-400 max-w-3xl">
+      What actually happens inside the orchestrator when it runs a single story. Note the two independent test re-runs — the orchestrator never trusts the agent's GREEN claim.
+    </p>
+
+    <div class="mt-8 timeline">
+      <div class="tl-row">
+        <div class="tl-actor">orchestrator</div>
+        <div class="tl-event">Pick next eligible story <span class="gate">no LLM</span>
+          <span class="sub">next_eligible_story(data) — respects depends_on + execution_wave</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">orchestrator</div>
+        <div class="tl-event">Create isolated git worktree <span class="gate">no LLM</span>
+          <span class="sub">.opencode/worktrees/&lt;story-id&gt;/ · scoped writes only</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">@check</div>
+        <div class="tl-event">Design review (8-point framework)
+          <span class="sub">PASS · NEEDS_CHANGES · BLOCK — parse_verdict (M22 markdown-robust)</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">@simplify</div>
+        <div class="tl-event">YAGNI / over-engineering review
+          <span class="sub">may DELEGATE_TO @architect (M19) for design questions</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">@test</div>
+        <div class="tl-event">Write FAILING tests first <span class="gate">TDD gate</span>
+          <span class="sub">criterion → test mapping enforced; RED_VERIFIED required</span>
+        </div>
+      </div>
+      <div class="tl-row muted">
+        <div class="tl-actor">orchestrator</div>
+        <div class="tl-event">Run tests independently <span class="gate fail">trust nothing</span>
+          <span class="sub">confirms RED before allowing @make to proceed</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">@make</div>
+        <div class="tl-event">Implement minimum code to turn RED → GREEN
+          <span class="sub">scoped to declared files_to_touch; retries up to MAX_MAKE_RETRIES</span>
+        </div>
+      </div>
+      <div class="tl-row muted">
+        <div class="tl-actor">orchestrator</div>
+        <div class="tl-event">Run tests independently AGAIN <span class="gate fail">trust nothing</span>
+          <span class="sub">if it doesn't pass HERE, @make's GREEN claim is invalid → retry</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">@guard</div>
+        <div class="tl-event">Audit <span class="mono">git diff</span> vs declared scope
+          <span class="sub">PASS_SCOPE · FAIL_OUT_OF_SCOPE · FAIL_NOTHING_CHANGED</span>
+        </div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-actor">@commit</div>
+        <div class="tl-event">One commit. One branch. Full SHA captured.
+          <span class="sub">feat/{epic}/{story-slug}-{hash} · message validated</span>
+        </div>
+      </div>
+      <div class="tl-row muted">
+        <div class="tl-actor">orchestrator</div>
+        <div class="tl-event">finalize_story("completed") + persist
+          <span class="sub">started_at · completed_at · commit_hash → progress.json (fsync)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-6 text-xs text-zinc-500 mono">
+      Every dot above is a checkpoint. Crash anywhere → <span class="text-zinc-300">aa-orchestrator resume</span> picks up from the last completed step.
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 8 — Tiered cost model (M25)                               -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="7">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">M25 — Tiered cost model</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      Pay <span class="text-accent-400">Claude</span> for thinking.
+      Pay <span class="text-blue-400">MiniMax</span> for typing.
+    </h2>
+    <p class="mt-4 text-lg text-zinc-400 max-w-3xl">
+      Same project, two runners. Per-agent dispatch routes each agent to the LLM that fits its role + budget.
+    </p>
+
+    <div class="mt-10 grid md:grid-cols-2 gap-5">
+      <div class="card p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div class="text-lg font-bold text-accent-400">Strategic agents</div>
+          <span class="chip">via Claude Code</span>
+        </div>
+        <ul class="text-sm text-zinc-300 space-y-1.5 mono">
+          <li>@planner · @architect · @spec</li>
+          <li>@discover · @sprint-planner</li>
+          <li>@scrum-master · @review-product</li>
+          <li>@watcher · @retro · @release</li>
+          <li>@refine · @backlog-groomer</li>
+        </ul>
+        <p class="text-xs text-zinc-500 mt-4">Few calls per sprint. Heavy reasoning. Pays off.</p>
+      </div>
+      <div class="card p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div class="text-lg font-bold text-blue-400">Labor agents</div>
+          <span class="chip" style="background: rgba(59,130,246,0.08); color: #93c5fd; border-color: rgba(59,130,246,0.18);">via OpenCode</span>
+        </div>
+        <ul class="text-sm text-zinc-300 space-y-1.5 mono">
+          <li>@check · @simplify</li>
+          <li>@test · @make</li>
+          <li>@guard · @commit</li>
+          <li>@progress</li>
+        </ul>
+        <p class="text-xs text-zinc-500 mt-4">Many calls per story. Cheap-and-fast model. Same outcome at a fraction of the cost.</p>
+      </div>
+    </div>
+
+    <div class="mt-8 codeblock max-w-3xl">
+<span class="c-cmt">// .opencode/config.json</span><br/>
+"pipeline": {<br/>
+&nbsp;&nbsp;"runner": <span class="c-str">"opencode"</span>,<br/>
+&nbsp;&nbsp;"agent_runners": {<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;"planner":   <span class="c-str">"claude"</span>,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;"architect": <span class="c-str">"claude"</span>,<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;"make":      <span class="c-str">"opencode"</span><br/>
+&nbsp;&nbsp;}<br/>
+}
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 9 — Live visibility (M24)                                 -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="8">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">M24 — Live visibility</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      No more guessing if it's <span class="text-zinc-400">stuck.</span>
+    </h2>
+    <p class="mt-4 text-lg text-zinc-400 max-w-3xl">
+      Live elapsed-time heartbeat during every agent call. Per-story durations, blocked reasons, graduated slowness warnings.
+    </p>
+
+    <div class="mt-10 grid md:grid-cols-2 gap-5">
+      <div class="card p-5">
+        <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">Heartbeat (every 30s)</div>
+        <div class="codeblock text-xs">
+<span class="c-cmt">[12:14:02]</span> &nbsp;-&gt; calling @check (timeout=600s)<br/>
+<span class="c-cmt">[12:14:32]</span> &nbsp;⏱ @check running for 30s<br/>
+<span class="c-cmt">[12:15:02]</span> &nbsp;⏱ @check running for 60s<br/>
+<span class="c-cmt">[12:15:32]</span> &nbsp;⏱ @check running for 90s<br/>
+<span class="c-cmt">[12:15:36]</span> &nbsp;⏲ @check finished in 94.2s
+        </div>
+      </div>
+      <div class="card p-5">
+        <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">Status with context</div>
+        <div class="codeblock text-xs">
+&nbsp;completed&nbsp;&nbsp;&nbsp;&nbsp;8&nbsp;&nbsp;&nbsp;&nbsp; avg 5m12s, slowest 14m32s<br/>
+&nbsp;in_progress&nbsp;&nbsp;1<br/>
+&nbsp;&nbsp;&nbsp;STORY-attendance — 8m15s elapsed<br/>
+&nbsp;blocked&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2<br/>
+&nbsp;&nbsp;&nbsp;STORY-leave — cascade from STORY-attendance<br/>
+&nbsp;failed&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1<br/>
+&nbsp;&nbsp;&nbsp;STORY-att — timeout after 900s (ran 14m32s)
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-8 card p-5 max-w-3xl">
+      <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">Graduated warnings</div>
+      <div class="flex flex-wrap items-center gap-4 text-sm">
+        <span class="text-amber-400 mono">⚠ 5m elapsed</span>
+        <span class="text-zinc-600">·</span>
+        <span class="text-amber-500 mono">⚠⚠ 10m elapsed</span>
+        <span class="text-zinc-600">·</span>
+        <span class="text-red-400 mono">⚠⚠⚠ 20m — approaching timeout</span>
+      </div>
+    </div>
+
+    <p class="mt-6 text-xs text-zinc-500 mono">
+      M21 bonus: heartbeats fan out as JSON-RPC notifications over WebSocket for live dashboards.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 10 — Safety guarantees                                    -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="9">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">Safety</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      Six guarantees the orchestrator enforces.
+    </h2>
+    <p class="mt-4 text-lg text-zinc-400">
+      Not promises — actual code that fails the pipeline if violated.
+    </p>
+
+    <div class="mt-10 grid md:grid-cols-2 gap-4">
+      <div class="card p-5">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Tests are real</div>
+        <p class="text-sm text-zinc-300">Orchestrator re-runs the test suite itself after <span class="mono">@make</span> claims GREEN. Never trusts the agent.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Scope is enforced</div>
+        <p class="text-sm text-zinc-300"><span class="mono">@guard</span> audits <span class="mono">git diff</span> against declared <span class="mono">files_to_touch</span>. Out-of-scope writes trigger retry or fail.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Every AC has a test</div>
+        <p class="text-sm text-zinc-300"><span class="mono">validate_criterion_coverage</span> rejects RED_VERIFIED if any acceptance criterion isn't mapped to a test.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">State survives</div>
+        <p class="text-sm text-zinc-300">Every transition fsync'd before next phase. <span class="mono">aa-orchestrator resume</span> picks up cleanly after any kill.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Budget enforced</div>
+        <p class="text-sm text-zinc-300"><span class="mono">MAX_BUDGET_USD</span> halts mid-call when exceeded. Per-agent cost tracking in <span class="mono">progress.json</span>.</p>
+      </div>
+      <div class="card p-5">
+        <div class="text-accent-400 text-sm uppercase tracking-widest mb-2">Production gates</div>
+        <p class="text-sm text-zinc-300">Clean working tree + all tests pass + build succeeds — before a sprint is considered complete.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 11 — Get started                                          -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="10">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">Get started</span>
+    <h2 class="text-4xl md:text-5xl font-bold leading-tight">
+      Four commands. Then walk away.
+    </h2>
+
+    <div class="mt-10 grid md:grid-cols-2 gap-6">
+      <div>
+        <div class="codeblock">
+<span class="c-cmt"># 1. One-time machine setup</span><br/>
+$ git clone &lt;repo&gt; ~/code/autonomous-agents<br/>
+$ <span class="c-kw">cd</span> ~/code/autonomous-agents<br/>
+$ bash install.sh<br/>
+<br/>
+<span class="c-cmt"># 2. Bootstrap a new project</span><br/>
+$ aa-orchestrator new <span class="c-str">my-app</span> --interactive<br/>
+<br/>
+<span class="c-cmt"># 3. Build the execution plan (no LLM cost)</span><br/>
+$ <span class="c-kw">cd</span> my-app<br/>
+$ aa-orchestrator develop --dry-run<br/>
+<br/>
+<span class="c-cmt"># 4. Run the whole thing autonomously</span><br/>
+$ aa-orchestrator sprint cycle
+        </div>
+      </div>
+      <div class="space-y-3">
+        <div class="card p-4">
+          <div class="text-xs uppercase tracking-widest text-accent-400 mb-2">Step 1 installs</div>
+          <p class="text-sm text-zinc-300">Global CLI at <span class="mono text-zinc-400">~/.local/bin/aa-orchestrator</span> + agents + skills + slash commands.</p>
+        </div>
+        <div class="card p-4">
+          <div class="text-xs uppercase tracking-widest text-accent-400 mb-2">Step 2 asks</div>
+          <p class="text-sm text-zinc-300">"Which LLM runner?" · "Got an idea?" · then auto-generates a SCRUM spec tree.</p>
+        </div>
+        <div class="card p-4">
+          <div class="text-xs uppercase tracking-widest text-accent-400 mb-2">Step 3 plans</div>
+          <p class="text-sm text-zinc-300">Deterministic parse + plan. ~1 second. Free. Writes <span class="mono text-zinc-400">progress.json</span>.</p>
+        </div>
+        <div class="card p-4">
+          <div class="text-xs uppercase tracking-widest text-accent-400 mb-2">Step 4 builds</div>
+          <p class="text-sm text-zinc-300">Plan → execute → retro → groom → next sprint. One git commit per story. Until the backlog is empty.</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="mt-8 text-sm text-zinc-500 mono">
+      Or drive from inside chat: <span class="text-zinc-300">cd my-app && claude</span>, then <span class="text-zinc-300">/sprint cycle</span>.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- Slide 12 — The numbers                                          -->
+<!-- ============================================================== -->
+<section class="slide" data-idx="11">
+  <div class="h-full w-full max-w-6xl mx-auto px-8 flex flex-col justify-center">
+    <span class="chip mb-6">By the numbers</span>
+    <h2 class="text-5xl md:text-6xl font-bold leading-tight">
+      Built like infrastructure.
+    </h2>
+    <p class="mt-4 text-lg text-zinc-400 max-w-3xl">
+      No magic. No dependencies. No surprises. Every state transition has a test.
+    </p>
+
+    <div class="mt-12 grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card p-5">
+        <div class="text-5xl font-extrabold bg-gradient-to-br from-accent-400 to-emerald-200 bg-clip-text text-transparent">948</div>
+        <div class="text-xs text-zinc-500 mt-2">passing tests</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-5xl font-extrabold bg-gradient-to-br from-accent-400 to-emerald-200 bg-clip-text text-transparent">100%</div>
+        <div class="text-xs text-zinc-500 mt-2">line coverage on every <span class="mono">lib/</span> module</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-5xl font-extrabold bg-gradient-to-br from-accent-400 to-emerald-200 bg-clip-text text-transparent">0</div>
+        <div class="text-xs text-zinc-500 mt-2">runtime dependencies (stdlib only)</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-5xl font-extrabold bg-gradient-to-br from-accent-400 to-emerald-200 bg-clip-text text-transparent">2</div>
+        <div class="text-xs text-zinc-500 mt-2">LLM runners (Claude · OpenCode)</div>
+      </div>
+    </div>
+
+    <div class="mt-10 grid md:grid-cols-3 gap-5">
+      <div class="card p-5">
+        <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">Milestones shipped</div>
+        <ul class="text-sm text-zinc-300 space-y-1 mono">
+          <li>M19 · sub-agent delegation</li>
+          <li>M20 · honest completion log</li>
+          <li>M21 · A2A event stream</li>
+          <li>M22 · markdown-robust verdicts</li>
+          <li>M23 · slash-command args</li>
+          <li>M24 · live visibility</li>
+          <li>M25 · tiered cost model</li>
+        </ul>
+      </div>
+      <div class="card p-5">
+        <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">Runtime promises</div>
+        <ul class="text-sm text-zinc-300 space-y-1">
+          <li>✓ Resume from any crash</li>
+          <li>✓ Worktree per story</li>
+          <li>✓ Cost budget enforced</li>
+          <li>✓ Independent test re-run</li>
+          <li>✓ Scope guard via <span class="mono">git diff</span></li>
+        </ul>
+      </div>
+      <div class="card p-5">
+        <div class="text-sm uppercase tracking-widest text-zinc-500 mb-3">What's next</div>
+        <ul class="text-sm text-zinc-300 space-y-1 mono">
+          <li>M26 · livelock fix</li>
+          <li>M27 · parallel stories</li>
+          <li>M28 · remote runner via WS</li>
+          <li>M29 · cost-per-runner split</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="mt-12 flex items-center justify-between max-w-3xl">
+      <div>
+        <div class="text-2xl font-bold text-zinc-200">Tell it what to build.</div>
+        <div class="text-zinc-400">Then walk away.</div>
+      </div>
+      <div class="chip text-base px-4 py-2">
+        <span class="w-2 h-2 rounded-full bg-accent-400"></span>
+        ready when you are
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const total = slides.length;
+  const dotsBox = document.getElementById('dots');
+  const numLabel = document.getElementById('slide-num');
+  const totLabel = document.getElementById('slide-total');
+  totLabel.textContent = String(total).padStart(2, '0');
+
+  // Build dot indicators
+  slides.forEach((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' active' : '');
+    d.dataset.idx = i;
+    d.addEventListener('click', (e) => { e.stopPropagation(); go(i); });
+    dotsBox.appendChild(d);
+  });
+  const dots = Array.from(dotsBox.children);
+
+  let current = 0;
+  function go(i) {
+    if (i < 0 || i >= total || i === current) return;
+    slides[current].classList.remove('active');
+    dots[current].classList.remove('active');
+    current = i;
+    slides[current].classList.add('active');
+    dots[current].classList.add('active');
+    numLabel.textContent = String(current + 1).padStart(2, '0');
+    window.location.hash = current + 1;
+  }
+  function next() { go(Math.min(current + 1, total - 1)); }
+  function prev() { go(Math.max(current - 1, 0)); }
+
+  document.addEventListener('keydown', (e) => {
+    if (['ArrowRight', ' ', 'PageDown'].includes(e.key)) { e.preventDefault(); next(); }
+    else if (['ArrowLeft', 'PageUp'].includes(e.key))      { e.preventDefault(); prev(); }
+    else if (e.key === 'Home') { e.preventDefault(); go(0); }
+    else if (e.key === 'End')  { e.preventDefault(); go(total - 1); }
+  });
+
+  // Click anywhere except interactive elements advances
+  document.body.addEventListener('click', (e) => {
+    if (e.target.closest('a, button, .dot, .kbd, input, textarea, select, code')) return;
+    next();
+  });
+
+  // Deep-link via hash (#3 → slide 3, 1-indexed)
+  function fromHash() {
+    const n = parseInt((window.location.hash || '').slice(1), 10);
+    if (!isNaN(n) && n >= 1 && n <= total) go(n - 1);
+  }
+  window.addEventListener('hashchange', fromHash);
+  fromHash();
+</script>
+</body>
+</html>

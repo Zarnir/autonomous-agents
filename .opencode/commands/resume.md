@@ -26,13 +26,13 @@ Run the orchestrator. Use whichever invocation works in this project (try in ord
 
 ```bash
 # 1. Globally-installed CLI (preferred)
-aa-orchestrator resume [args...]
+aa-orchestrator resume $ARGUMENTS
 
 # 2. Explicit global path
-python3 "${AA_HOME:-$HOME/.local/share/autonomous-agents}/lib/orchestrator.py" resume [args...]
+python3 "${AA_HOME:-$HOME/.local/share/autonomous-agents}/lib/orchestrator.py" resume $ARGUMENTS
 
 # 3. Project-local copy
-python3 lib/orchestrator.py resume [args...]
+python3 lib/orchestrator.py resume $ARGUMENTS
 ```
 
 Pick the first one that's available. Pass through every argument the user gave you.
@@ -40,7 +40,7 @@ Pick the first one that's available. Pass through every argument the user gave y
 **Auto-continue on outer timeout:** The orchestrator exits with code 3 when it approaches its outer timeout (`OUTER_TIMEOUT_SEC`, default 480s). When you see exit code 3, **immediately re-invoke `aa-orchestrator resume`** — do not ask the user. Loop until you get exit code 0, 1, or 2:
 
 ```bash
-aa-orchestrator resume [args...]
+aa-orchestrator resume $ARGUMENTS
 exit_code=$?
 while [ "$exit_code" -eq 3 ]; do
   aa-orchestrator resume

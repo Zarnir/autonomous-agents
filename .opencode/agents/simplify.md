@@ -48,7 +48,7 @@ Surface only items where Payoff ≥ Effort.
 **HIGH Payoff / MED Effort**
 - [Category] [File:line] [What to simplify and why]
 
-**Verdict:** PASS | SIMPLIFY
+VERDICT: PASS | SIMPLIFY
 ```
 
 - PASS: no HIGH Payoff items

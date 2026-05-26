@@ -85,7 +85,7 @@ You can stop, inspect, edit, resume, or kill it at any point. Every step writes 
 
 ### What it's NOT
 
-- **Not bug-free in production.** 899 tests cover the orchestration logic with 100% line coverage, but they don't cover real LLM behavior, rate limits, or your specific spec
+- **Not bug-free in production.** 948 tests cover the orchestration logic with 100% line coverage, but they don't cover real LLM behavior, rate limits, or your specific spec
 - **Not a chatbot.** It runs autonomously. You don't supervise each line — you supervise specs and outputs
 - **Not parallel.** Stories run one at a time
 - **Not multi-service.** One git repo, one project, one `progress.json`
@@ -161,13 +161,17 @@ Then:
 ```bash
 cd your-project
 
-# Known gotcha — see "Known gotchas" below
 # (Older installs only — current init.sh copies agents automatically)
 # mkdir -p .opencode && ln -s ~/.config/opencode/agents .opencode/agents
 
-# Run the whole thing autonomously
+# 1. Build the execution plan from your spec (deterministic, no LLM cost)
+aa-orchestrator develop --dry-run
+
+# 2. Run the whole thing autonomously
 aa-orchestrator sprint cycle
 ```
+
+> **Why `--dry-run` first?** `aa-orchestrator new` writes your spec to `docs/specs/epics/*.md` but does NOT create `.opencode/progress.json` (the executable plan). `sprint cycle` reads from progress.json — without it you'll see `ERROR: No .opencode/progress.json. Run develop first`. `--dry-run` runs the deterministic Phase 1+2 (parse + plan) and stops before any LLM call. Free, ~1 second. See ["Pipeline says 'No progress.json'"](#pipeline-says-no-opencodeprogressjson-after-aa-orchestrator-new) below.
 
 ### Option 2 — You write the spec by hand
 
@@ -192,7 +196,148 @@ aa-orchestrator sprint cycle
 
 After the `init.sh` step above, open the project in your AI IDE. It'll auto-discover `CLAUDE.md` / `AGENTS.md` and know the spec format. Tell it: *"Write a spec for X under docs/specs/epics/."*
 
-Then run `aa-orchestrator sprint cycle` like in Option 2.
+Then run `aa-orchestrator develop --dry-run && aa-orchestrator sprint cycle` like in Option 2.
+
+---
+
+## Your first run — concrete walkthrough (HR management example)
+
+This is the exact flow many users hit on first try, end-to-end with what you'll actually see at each step.
+
+### Step 1: Bootstrap the project
+
+```bash
+aa-orchestrator new hr-management-system --interactive
+```
+
+You'll be prompted three times:
+
+| Prompt | Example answer | Why it matters |
+|---|---|---|
+| "Which LLM runner should this project use?" | `claude` (or `opencode`) | Decides which CLI executes agents — needs to be on PATH |
+| "Do you have a one-line product idea ready?" | yes → "An HR system for tracking attendance, leave, payroll, and audit logs for a 50-person company" | Triggers `@discover` to generate the spec |
+| "Run `develop` next?" | **say no** | You want to inspect the spec before any LLM cost is spent on execution |
+
+After this completes (~30s for `@discover`):
+
+```
+hr-management-system/
+├── .opencode/                # agents, skills, commands, config
+├── docs/specs/
+│   └── epics/
+│       ├── 01-attendance.md     # @discover wrote these
+│       ├── 02-leave-management.md
+│       ├── 03-payroll.md
+│       ├── 04-audit-log.md
+│       ├── 05-rbac.md
+│       ├── 06-employee-onboarding.md
+│       └── 07-reporting.md
+├── CLAUDE.md, AGENTS.md, .gitignore
+└── .git/
+```
+
+No `progress.json` yet. No code yet. Just specs you can read like a real PRD.
+
+### Step 2: Inspect what `@discover` generated
+
+```bash
+cd hr-management-system
+cat docs/specs/epics/01-attendance.md
+```
+
+You'll see structured epic markdown — id, title, story blocks, acceptance criteria, task lists. Edit anything you disagree with now — easier than fixing it after the pipeline runs.
+
+### Step 3: Build the execution plan (deterministic, free)
+
+```bash
+aa-orchestrator develop --dry-run
+```
+
+What you'll see:
+
+```
+[2026-05-25T...] Phase 1: parsing spec markdown
+[2026-05-25T...]   parsed deterministically (no LLM call)
+[2026-05-25T...]   Found 7 epics, 30 stories (structured)
+[2026-05-25T...] Phase 2: building execution plan
+[2026-05-25T...]   plan built deterministically (no LLM call)
+[2026-05-25T...]   Plan written: version=1, 30 pending stories, 5 waves
+```
+
+Takes ~1 second. Cost: $0. Now `.opencode/progress.json` exists. Confirm with:
+
+```bash
+aa-orchestrator status
+# Total: 30 stories  |  pending: 30  |  completed: 0  |  …
+```
+
+### Step 4: Run the whole thing
+
+**Option A — Autonomous (recommended first time):**
+
+```bash
+aa-orchestrator sprint cycle
+```
+
+This loops `plan → execute → retro → groom → next-sprint` until your backlog is empty (or hits 10 sprints, whichever first). Walk away. Each story = one git commit on a feature branch.
+
+**Option B — Same flow but inside OpenCode chat:**
+
+```bash
+opencode                # opens the TUI in your project
+# then type:
+/sprint cycle
+```
+
+OpenCode loads `.opencode/commands/sprint.md` which calls `aa-orchestrator sprint cycle` under the hood. Same outcome, just inside the chat.
+
+### Step 5: Watch it run (live)
+
+Per-story output looks like:
+
+```
+▶ Starting STORY-attendance-checkin (wave 1, complexity medium)
+  Review cycle 1/2 (design)
+  -> calling @check (timeout=600s, model=claude-haiku-4-5-20251001)
+  -> calling @simplify (timeout=600s, ...)
+    @check: PASS   @simplify: PASS
+  Writing tests (@test)
+    ✓ RED verified (8 tests)
+  Implementing (@make), attempt 1/3
+    orchestrator-run tests: 8/8 GREEN
+  Verifying scope (@guard) → PASS
+  Committing (@commit) → abc1234
+✓ Completed STORY-attendance-checkin
+```
+
+Want a real-time event stream (M21)? In a second terminal:
+
+```bash
+aa-orchestrator serve --port 8765 --cmd develop   # one terminal
+wscat -c ws://127.0.0.1:8765                      # another
+```
+
+### Step 6: When it's done
+
+```bash
+aa-orchestrator status        # final per-story breakdown
+git log --oneline             # one commit per completed story
+ls docs/sprints/              # NN-plan.md + NN-retro.md per sprint
+```
+
+If you see `⚠ Pipeline finished with failures (X completed, Y failed, Z blocked)` (M20), it means the pipeline halted with errors — run `aa-orchestrator status` to see which stories failed and why. Common: a phase agent timed out (model too slow), the model didn't follow the verdict contract (see [Verdict parsing on non-Claude models](#verdict-parsing-on-non-claude-models-m22)), or git working tree was dirty before start.
+
+### What it'll cost (rough)
+
+Depends entirely on which model you use:
+
+| Model | Per story (avg) | 30-story HR project |
+|---|---|---|
+| `claude-haiku-4-5` (config default) | ~$0.10–0.30 | ~$3–10 |
+| `claude-sonnet-4-6` | ~$0.50–1.50 | ~$15–45 |
+| `minimax-coding-plan/MiniMax-M2.7` via OpenCode | varies | varies; slower per call |
+
+Set `MAX_BUDGET_USD` in `.opencode/config.json` `pipeline` block to hard-cap.
 
 ---
 
@@ -237,6 +382,10 @@ These are installed into your project by `init.sh`:
 | `/resume` | `aa-orchestrator resume` | Continue after interruption |
 | `/discover "idea"` | `aa-orchestrator discover "..."` | Generate a spec from a one-line idea |
 | `/revisit STORY-X` | `aa-orchestrator revisit STORY-X` | Redo a completed/failed story |
+
+**How args get passed (M23):** each slash command uses `$ARGUMENTS` internally — a platform-level placeholder that OpenCode (and Claude Code) substitute *before* the LLM sees the prompt. That means `/develop --dry-run` reliably passes `--dry-run`, `/resume --retry-blocked` reliably passes `--retry-blocked`, etc. Works the same for any model — Claude, MiniMax, or whatever OpenCode is pointed at. (M23 fixed a previous regression where 4 of 5 slash commands used prose `[args...]` and required a Claude-class model to interpret correctly.)
+
+If you edit `.opencode/commands/*.md` in your project, keep `$ARGUMENTS` — there's a regression test (`test_opencode_slash_commands_use_arguments_placeholder` in `tests/test_bootstrap_e2e.py`) that locks the contract.
 
 ### Quick decision: terminal or chat?
 
@@ -334,8 +483,7 @@ Every `aa-orchestrator` command, grouped by what you're trying to do. Bookmark t
 aa-orchestrator setup                             # one-time machine check
 aa-orchestrator new your-project --interactive    # bootstrap + spec generation
 cd your-project
-# (Older installs only — current init.sh copies agents automatically)
-# mkdir -p .opencode && ln -s ~/.config/opencode/agents .opencode/agents
+aa-orchestrator develop --dry-run                 # build progress.json (deterministic, no LLM)
 aa-orchestrator sprint cycle                      # let it run until done
 ```
 
@@ -569,6 +717,76 @@ bash ~/.local/share/autonomous-agents/init.sh --force   # copies agents into .op
 
 After this, both `--runner claude` and `--runner opencode` find agents automatically — no symlink or manual copy needed.
 
+### Verdict parsing on non-Claude models (M22)
+
+The orchestrator's `@check` and `@simplify` agents emit a final `VERDICT:` line that the pipeline parses to decide whether to continue. Claude models normalize markdown automatically — `**VERDICT:**` becomes `VERDICT:` in the output. Other models (notably **MiniMax-M2.7** via OpenCode) emit the markdown bold literally, which historically broke parsing — symptoms were verdicts like `** NEEDS_CHANGES [CONVERGENCE] [CONVERGENCE]` (leading `**` leak + doubled convergence marker).
+
+As of M22, `parse_verdict` strips `*` and `_` formatting from the verdict tail and dedupes the `[CONVERGENCE]` suffix. The `check.md` / `simplify.md` agent templates also use plain `VERDICT:` rather than `**Verdict:**` so model-faithful copies parse cleanly. No action needed for users — works for any model.
+
+### "Error: Model not found: claude-sonnet-4-6" (or similar)
+
+```
+⚠ sub-agent @architect failed (non-zero exit (1): stderr=Error: Model not found: claude-sonnet-4-6
+```
+
+**Why:** the agent (`@architect` here) is configured with a Claude model in `.opencode/config.json`'s `models` block, but the orchestrator routes it through the OpenCode runner (because `pipeline.runner: opencode`). OpenCode's MiniMax routing doesn't know Claude model names → "Model not found".
+
+**Fix (M25 — per-agent runner dispatch):** route the strategic agents through Claude Code while keeping labor agents on OpenCode. Edit `.opencode/config.json`:
+
+```json
+"pipeline": {
+  "runner": "opencode",
+  "agent_runners": {
+    "spec":            "claude",
+    "planner":         "claude",
+    "sprint-planner":  "claude",
+    "architect":       "claude",
+    "scrum-master":    "claude",
+    "discover":        "claude",
+    "review-product":  "claude",
+    "watcher":         "claude",
+    "retro":           "claude",
+    "release":         "claude",
+    "refine":          "claude",
+    "backlog-groomer": "claude"
+  }
+}
+```
+
+Requires `claude --version` to work locally. After saving, re-run `aa-orchestrator resume --retry-blocked` and the `@architect`/`@planner` calls will go through Claude Code's native dispatch.
+
+For a quick one-off override without editing config, use the per-agent env var:
+```bash
+AA_RUNNER_ARCHITECT=claude aa-orchestrator resume
+```
+
+See "Tiered cost model" under "How it's built" for the full design.
+
+### Pipeline says "No .opencode/progress.json" after `aa-orchestrator new`
+
+```
+ERROR: No .opencode/progress.json. Run `develop` first to create a plan.
+```
+
+Or via OpenCode:
+```
+/sprint cycle
+...
+ERROR: No .opencode/progress.json. Run `develop` first to create a plan.
+```
+
+**Why:** `aa-orchestrator new --interactive` creates your project structure and (optionally) writes spec files to `docs/specs/epics/`, but it **does NOT create `progress.json`**. That's a separate artifact — the *executable plan* derived from the specs. `sprint cycle` / `sprint plan` read it; without it they error out.
+
+**Fix (one command):**
+
+```bash
+aa-orchestrator develop --dry-run
+```
+
+That runs the deterministic Phase 1 (parse specs) and Phase 2 (build plan), writes `.opencode/progress.json`, and exits without making any LLM call. Takes ~1 second. Free. Then `sprint cycle` (or any pipeline command) works.
+
+You only need to do this once per project — `progress.json` persists across runs and is updated by every subsequent execution. If you're starting fresh after a broken run, see "[Reset and start over completely](#scenario-10-reset-and-start-over-completely)" below.
+
 ### "spec_parser.MalformedSpec: …"
 
 Your `docs/specs/epics/*.md` doesn't match the canonical format. Run:
@@ -783,9 +1001,130 @@ END_DELEGATE
 
 The orchestrator parses this marker, runs `@architect` via the normal `call_agent` path (so cost tracking flows through unchanged), splices the answer back into `@make`'s context, and re-invokes `@make`. Bounded by `pipeline.max_delegations_per_phase` (default 2). Sub-agents cannot themselves delegate — no nesting, no prompt-loop risk. Runner-agnostic: works identically on OpenCode and Claude Code.
 
+### Live event stream (M21 — A2A integration point B)
+
+Optional WebSocket JSON-RPC 2.0 stream for real-time observability. Off by default; opt in via the `serve` subcommand:
+
+```bash
+# Terminal 1: run the pipeline with the event stream exposed
+aa-orchestrator serve --port 8765 --cmd develop
+
+# Terminal 2: subscribe (any WebSocket client works — wscat, websocat, or a Python one-liner)
+wscat -c ws://127.0.0.1:8765
+```
+
+Every line the orchestrator logs and every story status transition is broadcast as a JSON-RPC notification:
+
+```json
+{"jsonrpc": "2.0", "method": "event/log_appended",
+ "params": {"ts": "2026-05-25T...", "msg": "✓ Completed STORY-login"}}
+
+{"jsonrpc": "2.0", "method": "event/story_status_changed",
+ "params": {"story_id": "STORY-login", "from": "in_progress", "to": "completed",
+            "commit_hash": "abc123...", "reason": null}}
+```
+
+**Read-only**: subscribers can listen but can't mutate orchestrator state. **Bound to `127.0.0.1`** by default — auth is deferred to a future integration. **Slow subscribers drop** events (bounded per-client queue) rather than back-pressuring the orchestrator. **Stdlib-only**: no `websockets` or other runtime dependency added.
+
+Use cases: live dashboards, Slack bots, IDE plugins, or just `wscat` while a sprint runs to watch progress without `tail -f`.
+
+### Live visibility (M24 — stop guessing if it's stuck)
+
+Every agent invocation now emits a periodic heartbeat so a slow LLM call doesn't look like a deadlock. Default 30s interval; configure via `pipeline.heartbeat_interval_sec` in `.opencode/config.json` (set `0` to disable):
+
+```
+[2026-05-26T...]   -> calling @check (timeout=600s, model=claude-haiku-4-5)
+[2026-05-26T...]   ⏱ @check running for 30s (timeout 600s)
+[2026-05-26T...]   ⏱ @check running for 60s (timeout 600s)
+[2026-05-26T...]   ⏱ @check running for 90s (timeout 600s)
+[2026-05-26T...]   ⏲ @check finished in 94.2s
+```
+
+**Graduated slowness warnings** fire at 5/10/20 min elapsed (each once per agent call):
+```
+⚠   @make elapsed 5m
+⚠⚠  @make elapsed 10m
+⚠⚠⚠ @make elapsed 20m — approaching timeout (600s remaining)
+```
+
+The 30-minute watcher RFC trigger is unchanged for truly-stalled cases.
+
+**`aa-orchestrator status` shows real context now**, not just counts:
+
+```
+  completed     8     avg 5m12s, slowest STORY-payroll-calc (14m32s)
+  in_progress   1
+    STORY-attendance-checkin — 8m15s elapsed
+  blocked        2
+    STORY-leave-balance — cascade from STORY-attendance-checkin (failed) (ran 12s)
+    STORY-payroll-deductions — cascade from STORY-leave-balance (blocked) (ran 12s)
+  failed         1
+    STORY-attendance-checkin — agent_error:make:timeout after 900s (ran 14m32s)
+```
+
+Per-story timing (`started_at`/`completed_at`) and `failure_reason` are stored on each story in `progress.json` — so you can grep/jq them too, not just read `status` output.
+
+If you're running with the M21 event stream open (`aa-orchestrator serve --cmd develop`), heartbeats also fan out as `event/agent_heartbeat` JSON-RPC notifications, so a dashboard can plot real-time per-agent latency.
+
+### Tiered cost model (M25 — per-agent runner dispatch)
+
+The orchestrator can now route DIFFERENT agents through DIFFERENT runners in the same project. Use Claude (Sonnet/Opus) for strategic agents that benefit from heavier reasoning, and a cheaper-and-faster local model (e.g., MiniMax via OpenCode) for tactical labor agents that fire many times per story.
+
+**Requires both runners installed and authenticated:**
+```bash
+claude --version    # Claude Code CLI on PATH
+opencode --version  # OpenCode CLI on PATH
+```
+
+Configure in `.opencode/config.json`:
+
+```json
+"pipeline": {
+  "runner": "opencode",           // default for unspecified agents
+  "agent_runners": {
+    "spec":            "claude",  // strategy — heavier reasoning, fewer calls
+    "planner":         "claude",
+    "sprint-planner":  "claude",
+    "architect":       "claude",
+    "scrum-master":    "claude",
+    "discover":        "claude",
+    "review-product":  "claude",
+    "watcher":         "claude",
+    "retro":           "claude",
+    "release":         "claude",
+    "refine":          "claude",
+    "backlog-groomer": "claude"
+    // check, simplify, test, make, guard, commit, progress
+    // fall through to pipeline.runner (opencode → MiniMax)
+  }
+}
+```
+
+Pair each agent's runner with a model it knows in the `models` block:
+
+```json
+"models": {
+  "planner":   "claude-sonnet-4-6",                 // claude runner accepts this
+  "architect": "claude-sonnet-4-6",
+  "make":      "minimax-coding-plan/MiniMax-M2.7",  // opencode runner accepts this
+  "check":     "minimax-coding-plan/MiniMax-M2.7"
+}
+```
+
+**Resolution order** (first non-empty wins):
+1. `AA_RUNNER_<AGENT_NAME>` env var — e.g., `AA_RUNNER_PLANNER=opencode` for one-off testing
+2. `pipeline.agent_runners[<agent>]` from config
+3. `AA_RUNNER` env var — project-wide override
+4. `pipeline.runner` from config — project default
+5. `select_runner()` auto-detect
+
+Runner instances are cached per runner-name (one ClaudeCodeRunner + one OpenCodeRunner per process at most), so cost is constant regardless of how many agents map to each.
+
+**Why this matters:** before M25, if you set `models.planner=claude-sonnet-4-6` while running on OpenCode, you'd see `Error: Model not found: claude-sonnet-4-6` because OpenCode's MiniMax routing doesn't know Claude models. M25 fixes this by routing `@planner` through Claude Code directly.
+
 ### Testing
 
-899 passing tests across 55 files, **100% line coverage** on every module in `lib/`.
+948 passing tests across 58 files, **100% line coverage** on every module in `lib/`.
 
 ```bash
 pytest tests/                                       # full suite (~5s)

@@ -52,7 +52,7 @@ You receive either:
 **NOTE**
 - [Dimension] [Observation]
 
-**Verdict:** PASS | NEEDS_CHANGES | BLOCK
+VERDICT: PASS | NEEDS_CHANGES | BLOCK
 ```
 
 - PASS: no BLOCK items, fewer than 3 WARN

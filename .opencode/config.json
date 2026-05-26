@@ -55,6 +55,7 @@
     "max_test_retries": 1,
     "max_make_retries": 2,
     "max_delegations_per_phase": 2,
+    "heartbeat_interval_sec": 30,
     "agent_timeout_sec": 600,
     "outer_timeout_sec": 480,
     "auto_commit": true,
